@@ -1568,6 +1568,16 @@ func (kl *Kubelet) syncPod(ctx context.Context, updateType kubetypes.SyncPodType
 		}
 	}
 
+	// TODO: ensure, it was logged only once
+	// Record the pod startup SLO time
+	podStarted := kl.statusManager.HasPodStartedSLO(pod)
+	if podStarted {
+		// TODO: decide, if it's measured since:
+		//  1) firstSeenTime (new annotation?)
+		//  2) pod.CreationTimestamp.Time
+		metrics.PodStartSLODuration.Observe(metrics.SinceInSeconds(pod.CreationTimestamp.Time))
+	}
+
 	// Record the time it takes for the pod to become running
 	// since kubelet first saw the pod if firstSeenTime is set.
 	existingStatus, ok := kl.statusManager.GetPodStatus(pod.UID)

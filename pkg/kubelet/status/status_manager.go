@@ -97,6 +97,9 @@ type Manager interface {
 	// Start the API server status sync loop.
 	Start()
 
+	// HasPodStartedSLO TBD
+	HasPodStartedSLO(pod *v1.Pod) bool
+
 	// SetPodStatus caches updates the cached status for the given pod, and triggers a status update.
 	SetPodStatus(pod *v1.Pod, status v1.PodStatus)
 
@@ -406,6 +409,19 @@ func hasPodInitialized(pod *v1.Pod) bool {
 	}
 	// otherwise the pod has no record of being initialized
 	return false
+}
+
+// hasPodStartedSLO would reflect 1:1 Pod startup latency SLI/SLO definition
+// ref: https://github.com/kubernetes/community/blob/master/sig-scalability/slos/pod_startup_latency.md
+func (m *manager) HasPodStartedSLO(pod *v1.Pod) bool {
+	// if any container haven't started nor the , the pod has not started
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Started == nil || (!*status.Started && status.RestartCount == 0) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // initializedContainers returns all status except for suffix of containers that are in Waiting
