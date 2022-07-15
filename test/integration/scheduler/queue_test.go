@@ -56,6 +56,7 @@ func TestCoreResourceEnqueue(t *testing.T) {
 	testCtx := testutils.InitTestSchedulerWithOptions(
 		t,
 		testutils.InitTestAPIServer(t, "core-res-enqueue", nil),
+		0,
 		scheduler.WithPodInitialBackoffSeconds(0),
 		scheduler.WithPodMaxBackoffSeconds(0),
 	)
@@ -104,7 +105,7 @@ func TestCoreResourceEnqueue(t *testing.T) {
 		if fitError == nil {
 			t.Fatalf("Expect Pod %v to fail at scheduling.", podInfo.Pod.Name)
 		}
-		testCtx.Scheduler.Error(podInfo, fitError)
+		testCtx.Scheduler.FailureHandler(ctx, fwk, podInfo, fitError, v1.PodReasonUnschedulable, nil)
 	}
 
 	// Trigger a NodeTaintChange event.
@@ -236,6 +237,7 @@ func TestCustomResourceEnqueue(t *testing.T) {
 	testCtx = testutils.InitTestSchedulerWithOptions(
 		t,
 		testCtx,
+		0,
 		scheduler.WithProfiles(cfg.Profiles...),
 		scheduler.WithFrameworkOutOfTreeRegistry(registry),
 		scheduler.WithPodInitialBackoffSeconds(0),
@@ -278,7 +280,7 @@ func TestCustomResourceEnqueue(t *testing.T) {
 	if fitError == nil {
 		t.Fatalf("Expect Pod %v to fail at scheduling.", podInfo.Pod.Name)
 	}
-	testCtx.Scheduler.Error(podInfo, fitError)
+	testCtx.Scheduler.FailureHandler(ctx, fwk, podInfo, fitError, v1.PodReasonUnschedulable, nil)
 
 	// Scheduling cycle is incremented from 0 to 1 after NextPod() is called, so
 	// pass a number larger than 1 to move Pod to unschedulablePods.

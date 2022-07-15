@@ -1664,11 +1664,25 @@ func TestMasqueradeRule(t *testing.T) {
 		makeServiceMap(fp)
 		fp.syncProxyRules()
 
-		postRoutingRules := ipt.GetRules(string(kubePostroutingChain))
-		if !hasJump(postRoutingRules, "MASQUERADE", "") {
+		buf := bytes.NewBuffer(nil)
+		_ = ipt.SaveInto(utiliptables.TableNAT, buf)
+		natRules := strings.Split(string(buf.Bytes()), "\n")
+		var hasMasqueradeJump, hasMasqRandomFully bool
+		for _, line := range natRules {
+			rule, _ := iptablestest.ParseRule(line, false)
+			if rule != nil && rule.Chain == kubePostroutingChain && rule.Jump != nil && rule.Jump.Value == "MASQUERADE" {
+				hasMasqueradeJump = true
+				if rule.RandomFully != nil {
+					hasMasqRandomFully = true
+				}
+				break
+			}
+		}
+
+		if !hasMasqueradeJump {
 			t.Errorf("Failed to find -j MASQUERADE in %s chain", kubePostroutingChain)
 		}
-		if hasMasqRandomFully(postRoutingRules) != testcase {
+		if hasMasqRandomFully != testcase {
 			probs := map[bool]string{false: "found", true: "did not find"}
 			t.Errorf("%s --random-fully in -j MASQUERADE rule in %s chain for HasRandomFully()=%v", probs[testcase], kubePostroutingChain, testcase)
 		}
@@ -2137,7 +2151,7 @@ func TestHealthCheckNodePort(t *testing.T) {
 	checkIptables(t, ipt, epIpt)
 }
 
-func TestLoadBalanceSourceRanges(t *testing.T) {
+func TestLoadBalancerSourceRanges(t *testing.T) {
 	ipt, fp := buildFakeProxier()
 
 	svcIP := "10.20.30.41"
@@ -2200,7 +2214,7 @@ func TestLoadBalanceSourceRanges(t *testing.T) {
 			Protocol: strings.ToLower(string(v1.ProtocolTCP)),
 			SetType:  utilipset.HashIPPort,
 		}},
-		kubeLoadbalancerFWSet: {{
+		kubeLoadBalancerFWSet: {{
 			IP:       svcLBIP,
 			Port:     svcPort,
 			Protocol: strings.ToLower(string(v1.ProtocolTCP)),
@@ -2229,15 +2243,13 @@ func TestLoadBalanceSourceRanges(t *testing.T) {
 		}, {
 			JumpChain: "ACCEPT", MatchSet: kubeLoadBalancerSet,
 		}},
-		string(kubeLoadBalancerChain): {{
-			JumpChain: string(kubeFirewallChain), MatchSet: kubeLoadbalancerFWSet,
-		}, {
-			JumpChain: string(kubeMarkMasqChain), MatchSet: "",
+		string(kubeProxyFirewallChain): {{
+			JumpChain: string(kubeSourceRangesFirewallChain), MatchSet: kubeLoadBalancerFWSet,
 		}},
-		string(kubeFirewallChain): {{
+		string(kubeSourceRangesFirewallChain): {{
 			JumpChain: "RETURN", MatchSet: kubeLoadBalancerSourceCIDRSet,
 		}, {
-			JumpChain: string(kubeMarkDropChain), MatchSet: "",
+			JumpChain: "DROP", MatchSet: "",
 		}},
 	}
 	checkIptables(t, ipt, epIpt)
@@ -3817,42 +3829,41 @@ func buildFakeProxier() (*iptablestest.FakeIPTables, *Proxier) {
 	return ipt, NewFakeProxier(ipt, ipvs, ipset, nil, nil, v1.IPv4Protocol)
 }
 
-func hasJump(rules []iptablestest.Rule, destChain, ipSet string) bool {
-	for _, r := range rules {
-		if r[iptablestest.Jump] == destChain {
-			if ipSet == "" {
-				return true
-			}
-			if strings.Contains(r[iptablestest.MatchSet], ipSet) {
-				return true
-			}
-		}
-	}
-	return false
-}
+func getRules(ipt *iptablestest.FakeIPTables, chain utiliptables.Chain) []*iptablestest.Rule {
+	var rules []*iptablestest.Rule
 
-func hasMasqRandomFully(rules []iptablestest.Rule) bool {
-	for _, r := range rules {
-		if r[iptablestest.Masquerade] == "--random-fully" {
-			return true
+	buf := bytes.NewBuffer(nil)
+	_ = ipt.SaveInto(utiliptables.TableNAT, buf)
+	_ = ipt.SaveInto(utiliptables.TableFilter, buf)
+	lines := strings.Split(string(buf.Bytes()), "\n")
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "-A ") {
+			continue
+		}
+		rule, _ := iptablestest.ParseRule(l, false)
+		if rule != nil && rule.Chain == chain {
+			rules = append(rules, rule)
 		}
 	}
-	return false
+	return rules
 }
 
 // checkIptables to check expected iptables chain and rules. The got rules must have same number and order as the
 // expected rules.
 func checkIptables(t *testing.T, ipt *iptablestest.FakeIPTables, epIpt netlinktest.ExpectedIptablesChain) {
 	for epChain, epRules := range epIpt {
-		rules := ipt.GetRules(epChain)
+		rules := getRules(ipt, utiliptables.Chain(epChain))
 		if len(rules) != len(epRules) {
 			t.Errorf("Expected %d iptables rule in chain %s, got %d", len(epRules), epChain, len(rules))
 			continue
 		}
 		for i, epRule := range epRules {
 			rule := rules[i]
-			if rule[iptablestest.Jump] != epRule.JumpChain || !strings.Contains(rule[iptablestest.MatchSet], epRule.MatchSet) {
-				t.Errorf("Expected MatchSet=%s JumpChain=%s, got MatchSet=%s JumpChain=%s", epRule.MatchSet, epRule.JumpChain, rule[iptablestest.MatchSet], rule[iptablestest.Jump])
+			if rule.Jump == nil || rule.Jump.Value != epRule.JumpChain {
+				t.Errorf("Expected MatchSet=%s JumpChain=%s, got %s", epRule.MatchSet, epRule.JumpChain, rule.Raw)
+			}
+			if (epRule.MatchSet == "" && rule.MatchSet != nil) || (epRule.MatchSet != "" && (rule.MatchSet == nil || rule.MatchSet.Value != epRule.MatchSet)) {
+				t.Errorf("Expected MatchSet=%s JumpChain=%s, got %s", epRule.MatchSet, epRule.JumpChain, rule.Raw)
 			}
 		}
 	}
@@ -4662,13 +4673,14 @@ func TestCreateAndLinkKubeChain(t *testing.T) {
 	fp.createAndLinkKubeChain()
 	expectedNATChains := `:KUBE-SERVICES - [0:0]
 :KUBE-POSTROUTING - [0:0]
-:KUBE-FIREWALL - [0:0]
 :KUBE-NODE-PORT - [0:0]
 :KUBE-LOAD-BALANCER - [0:0]
 :KUBE-MARK-MASQ - [0:0]
 `
 	expectedFilterChains := `:KUBE-FORWARD - [0:0]
 :KUBE-NODE-PORT - [0:0]
+:KUBE-PROXY-FIREWALL - [0:0]
+:KUBE-SOURCE-RANGES-FIREWALL - [0:0]
 `
 	assert.Equal(t, expectedNATChains, string(fp.natChains.Bytes()))
 	assert.Equal(t, expectedFilterChains, string(fp.filterChains.Bytes()))

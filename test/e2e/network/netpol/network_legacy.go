@@ -28,7 +28,7 @@ import (
 
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1780,7 +1780,7 @@ var _ = common.SIGDescribe("NetworkPolicy [Feature:SCTPConnectivity][LinuxOnly][
 
 			// Create a pod with name 'client-cannot-connect', which will attempt to communicate with the server,
 			// but should not be able to now that isolation is on.
-			testCannotConnect(f, f.Namespace, "client-cannot-connect", service, 80)
+			testCannotConnectProtocol(f, f.Namespace, "client-cannot-connect", service, 80, v1.ProtocolSCTP)
 		})
 
 		ginkgo.It("should enforce policy based on Ports [Feature:NetworkPolicy]", func() {

@@ -35,6 +35,7 @@ import (
 	typedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
+	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	api "k8s.io/kubernetes/pkg/apis/core"
 
 	//svc "k8s.io/kubernetes/pkg/api/v1/service"
@@ -109,8 +110,8 @@ func newSTS(name, namespace string, replicas int) *appsv1.StatefulSet {
 						{
 							Name: "datadir",
 							VolumeSource: v1.VolumeSource{
-								HostPath: &v1.HostPathVolumeSource{
-									Path: fmt.Sprintf("/tmp/%v", "datadir"),
+								PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+									ClaimName: "fake-pvc-name",
 								},
 							},
 						},
@@ -159,27 +160,27 @@ func newStatefulSetPVC(name string) v1.PersistentVolumeClaim {
 }
 
 // scSetup sets up necessities for Statefulset integration test, including control plane, apiserver, informers, and clientset
-func scSetup(t *testing.T) (framework.CloseFunc, *statefulset.StatefulSetController, informers.SharedInformerFactory, clientset.Interface) {
-	controlPlaneConfig := framework.NewIntegrationTestControlPlaneConfig()
-	_, s, closeFn := framework.RunAnAPIServer(controlPlaneConfig)
+func scSetup(t *testing.T) (kubeapiservertesting.TearDownFunc, *statefulset.StatefulSetController, informers.SharedInformerFactory, clientset.Interface) {
+	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
+	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
 
-	config := restclient.Config{Host: s.URL}
-	clientSet, err := clientset.NewForConfig(&config)
+	config := restclient.CopyConfig(server.ClientConfig)
+	clientSet, err := clientset.NewForConfig(config)
 	if err != nil {
 		t.Fatalf("error in create clientset: %v", err)
 	}
 	resyncPeriod := 12 * time.Hour
-	informers := informers.NewSharedInformerFactory(clientset.NewForConfigOrDie(restclient.AddUserAgent(&config, "statefulset-informers")), resyncPeriod)
+	informers := informers.NewSharedInformerFactory(clientset.NewForConfigOrDie(restclient.AddUserAgent(config, "statefulset-informers")), resyncPeriod)
 
 	sc := statefulset.NewStatefulSetController(
 		informers.Core().V1().Pods(),
 		informers.Apps().V1().StatefulSets(),
 		informers.Core().V1().PersistentVolumeClaims(),
 		informers.Apps().V1().ControllerRevisions(),
-		clientset.NewForConfigOrDie(restclient.AddUserAgent(&config, "statefulset-controller")),
+		clientset.NewForConfigOrDie(restclient.AddUserAgent(config, "statefulset-controller")),
 	)
 
-	return closeFn, sc, informers, clientSet
+	return server.TearDownFn, sc, informers, clientSet
 }
 
 // Run STS controller and informers
@@ -276,6 +277,35 @@ func getPods(t *testing.T, podClient typedv1.PodInterface, labelMap map[string]s
 		t.Fatalf("obtained a nil list of pods")
 	}
 	return pods
+}
+
+func getStatefulSetPVCs(t *testing.T, pvcClient typedv1.PersistentVolumeClaimInterface, sts *appsv1.StatefulSet) []*v1.PersistentVolumeClaim {
+	pvcs := []*v1.PersistentVolumeClaim{}
+	for i := int32(0); i < *sts.Spec.Replicas; i++ {
+		pvcName := fmt.Sprintf("%s-%s-%d", sts.Spec.VolumeClaimTemplates[0].Name, sts.Name, i)
+		pvc, err := pvcClient.Get(context.TODO(), pvcName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("failed to get PVC %s: %v", pvcName, err)
+		}
+		pvcs = append(pvcs, pvc)
+	}
+	return pvcs
+}
+
+func verifyOwnerRef(t *testing.T, pvc *v1.PersistentVolumeClaim, kind string, expected bool) {
+	found := false
+	for _, ref := range pvc.GetOwnerReferences() {
+		if ref.Kind == kind {
+			if expected {
+				found = true
+			} else {
+				t.Fatalf("Found %s ref but expected none for PVC %s", kind, pvc.Name)
+			}
+		}
+	}
+	if expected && !found {
+		t.Fatalf("Expected %s ref but found none for PVC %s", kind, pvc.Name)
+	}
 }
 
 func updateSTS(t *testing.T, stsClient typedappsv1.StatefulSetInterface, stsName string, updateFunc func(*appsv1.StatefulSet)) *appsv1.StatefulSet {

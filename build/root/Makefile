@@ -70,6 +70,8 @@ define ALL_HELP_INFO
 #   WHAT: Directory names to build.  If any of these directories has a 'main'
 #     package, the build will produce executable files under $(OUT_DIR)/bin.
 #     If not specified, "everything" will be built.
+#     "vendor/<module>/<path>" is accepted as alias for "<module>/<path>".
+#     "ginkgo" is an alias for the ginkgo CLI.
 #   GOFLAGS: Extra flags to pass to 'go' when building.
 #   GOLDFLAGS: Extra linking flags passed to 'go' when building.
 #   GOGCFLAGS: Additional go compile flags passed to 'go' when building.
@@ -106,7 +108,7 @@ ginkgo:
 	echo "$$GINKGO_HELP_INFO"
 else
 ginkgo:
-	hack/make-rules/build.sh github.com/onsi/ginkgo/ginkgo
+	hack/make-rules/build.sh github.com/onsi/ginkgo/v2/ginkgo
 endif
 
 define VERIFY_HELP_INFO
@@ -410,8 +412,8 @@ define RELEASE_SKIP_TESTS_HELP_INFO
 # Args:
 #   KUBE_RELEASE_RUN_TESTS: Whether to run tests. Set to 'y' to run tests anyways.
 #   KUBE_FASTBUILD: Whether to cross-compile for other architectures. Set to 'false' to do so.
-#   KUBE_DOCKER_REGISTRY: Registry of released images, default to k8s.gcr.io
-#   KUBE_BASE_IMAGE_REGISTRY: Registry of base images for controlplane binaries, default to k8s.gcr.io/build-image
+#   KUBE_DOCKER_REGISTRY: Registry of released images, default to registry.k8s.io
+#   KUBE_BASE_IMAGE_REGISTRY: Registry of base images for controlplane binaries, default to registry.k8s.io/build-image
 #
 # Example:
 #   make release-skip-tests
@@ -500,7 +502,7 @@ define CMD_HELP_INFO
 #   make kubectl kube-proxy
 endef
 #TODO: make EXCLUDE_TARGET auto-generated when there are other files in cmd/
-EXCLUDE_TARGET=BUILD OWNERS
+EXCLUDE_TARGET=OWNERS
 CMD_TARGET = $(filter-out %$(EXCLUDE_TARGET),$(notdir $(abspath $(wildcard cmd/*/))))
 .PHONY: $(CMD_TARGET)
 ifeq ($(PRINT_HELP),y)
